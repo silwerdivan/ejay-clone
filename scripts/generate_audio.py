@@ -1,6 +1,7 @@
-"""Generate the original PULSE/08 demo pack: 16 mono 22.05 kHz WAV loops.
+"""Generate 12 original PULSE/08 instrument loops as mono 22.05 kHz WAVs.
 
-No samples or third-party recordings are used. Run with Python's standard library.
+Recorded vocals are prepared separately by prepare_vocals.py and are not overwritten.
+Only Python's standard library is required.
 """
 from pathlib import Path
 import math
@@ -22,6 +23,7 @@ def silence():
 
 def add_tone(buf, start, duration, freq, amp, decay=5.0, harmonics=(1.0,)):
     first = int(start * RATE)
+    freq *= 2 ** (3 / 12)  # Keep the synthesized instruments in C minor with the vocals.
     count = min(int(duration * RATE), N - first)
     for j in range(max(0, count)):
         t = j / RATE
@@ -110,46 +112,6 @@ def synth(name):
     return b
 
 
-VOWELS = {
-    "ah": (750, 1200, 2500), "ee": (300, 2200, 3000),
-    "oh": (450, 850, 2400), "eh": (500, 1800, 2600),
-}
-
-
-def vocal_phrase(buf, start, length, freq, vowel, amp=.3):
-    first = int(start * RATE)
-    count = min(int(length * RATE), N - first)
-    formants = VOWELS[vowel]
-    weights = []
-    for harmonic in range(1, 27):
-        hz = freq * harmonic
-        resonance = sum(math.exp(-.5 * ((hz - formant) / (100 + formant * .08)) ** 2) for formant in formants)
-        weights.append((.08 / harmonic + resonance * .65) / harmonic ** .25)
-    for j in range(max(0, count)):
-        t = j / RATE
-        env = min(1, t / .035) * min(1, (length - t) / .07) * (.86 + .14 * math.sin(math.pi * t / length))
-        vibrato = 1 + .006 * math.sin(2 * math.pi * 5.2 * t)
-        value = sum(w * math.sin(2 * math.pi * freq * (h + 1) * vibrato * t + h * .12) for h, w in enumerate(weights))
-        buf[first + j] += amp * env * value
-    add_noise(buf, start, .025, .035, 20, True)
-
-
-def vocals(name):
-    b = silence()
-    phrases = {
-        "feel-the-night": [(0, .34, 220, "ah"), (.38, .3, 261.626, "ee"), (.78, .48, 329.628, "oh"), (1.35, .5, 261.626, "ah")],
-        "dont-stop": [(0, .22, 220, "oh"), (.25, .2, 220, "ah"), (.6, .22, 329.628, "ee"), (1, .2, 261.626, "oh"), (1.25, .45, 220, "ah")],
-        "higher": [(0, .45, 220, "ah"), (.5, .42, 261.626, "ah"), (1, .75, 329.628, "ee")],
-        "echo-chop": [(0, .18, 261.626, "eh"), (.25, .18, 261.626, "eh"), (.5, .3, 329.628, "oh"), (1.1, .18, 220, "ah"), (1.35, .4, 261.626, "ee")],
-    }
-    for event in phrases[name]: vocal_phrase(b, *event)
-    dry = b[:]
-    for seconds, gain in ((.25, .22), (.5, .1)):
-        delay = int(seconds * RATE)
-        for i in range(delay, N): b[i] += dry[i - delay] * gain
-    return b
-
-
 def write(name, samples):
     peak = max(.001, max(abs(value) for value in samples))
     gain = .88 / peak
@@ -166,5 +128,4 @@ def write(name, samples):
 for name in ("night-drive", "after-hours", "silver-break", "soft-focus"): write(name, drums(name))
 for name in ("low-end-theory", "roller", "elastic", "sub-current"): write(name, bass(name))
 for name in ("glass-city", "neon-arc", "slow-orbit", "polaroid"): write(name, synth(name))
-for name in ("feel-the-night", "dont-stop", "higher", "echo-chop"): write(name, vocals(name))
-print(f"Generated 16 original loops in {OUT}")
+print(f"Generated 12 original instrument loops in {OUT}; recorded vocals unchanged")

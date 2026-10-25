@@ -105,6 +105,23 @@ test('selects, duplicates into the first free slot, and deletes only the target'
   await expect(block(page, 'glass-city')).toHaveAttribute('data-bar', '1')
 })
 
+test('block actions do not become drags after slight pointer movement', async ({ page }) => {
+  const source = block(page, 'glass-city')
+  await source.click()
+  for (const action of ['Duplicate Glass city at bar 2', 'Delete Glass city at bar 2']) {
+    const button = source.getByRole('button', { name: action })
+    const bounds = await button.boundingBox()
+    if (!bounds) throw new Error('Block action geometry unavailable')
+    await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(bounds.x + bounds.width / 2 + 2, bounds.y + bounds.height / 2 + 2)
+    await page.mouse.up()
+  }
+  await expect(block(page, 'glass-city')).toHaveCount(1)
+  await expect(block(page, 'glass-city')).toHaveAttribute('data-bar', '0')
+  await expect(block(page, 'neon-arc')).toHaveAttribute('data-bar', '3')
+})
+
 test('duplication rejects a full lane', async ({ page }) => {
   for (const name of ['Polaroid', 'Neon arc', 'Glass city', 'Slow orbit', 'Polaroid']) await add(page, name).click()
   await expect(page.locator('[data-testid="timeline-block"][data-lane="synth"]')).toHaveCount(8)
@@ -180,6 +197,75 @@ test('reset stops playback, clears edits, and persists the curated demo', async 
   await expect(page.getByTestId('playhead')).toHaveAttribute('data-position', '0')
   await page.reload()
   await expect(page.getByTestId('timeline-block')).toHaveCount(14)
+})
+
+test('reset invalidates a Play request still waiting for audio', async ({ page }) => {
+  let release!: () => void
+  let waiting = 0
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  await page.route('**/audio/*.wav', async (route) => {
+    waiting++
+    await gate
+    waiting--
+    await route.continue()
+  })
+  await page.getByRole('button', { name: 'Play', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Loading audio' })).toBeVisible()
+  await page.getByRole('button', { name: 'Reset demo' }).click()
+  release()
+  await expect.poll(() => waiting).toBe(0)
+  await expect(page.getByRole('button', { name: 'Play', exact: true })).toBeVisible()
+  await expect(page.getByTestId('playhead')).toHaveAttribute('data-position', '0')
+  await page.waitForTimeout(250)
+  await expect(page.getByRole('button', { name: 'Play', exact: true })).toBeVisible()
+  await expect(page.getByTestId('playhead')).toHaveAttribute('data-position', '0')
+})
+
+test('storage failures leave a visible unsaved state', async ({ page }) => {
+  await page.addInitScript(() => {
+    Storage.prototype.setItem = () => { throw new DOMException('Storage unavailable', 'QuotaExceededError') }
+  })
+  await page.reload()
+  await expect(page.locator('.save-state')).toHaveText('Not saved')
+  await add(page, 'Soft focus').click()
+  await expect(page.locator('.save-state')).toHaveText('Not saved')
+  await expect(page.locator('.save-state')).toBeVisible()
+})
+
+test('active edits stop sources and the edited arrangement starts audio again', async ({ page }) => {
+  test.setTimeout(35_000)
+  await page.addInitScript(() => {
+    const state = window as unknown as { __audioStarts: number; __audioStops: number }
+    state.__audioStarts = 0
+    state.__audioStops = 0
+    const start = AudioBufferSourceNode.prototype.start
+    const stop = AudioBufferSourceNode.prototype.stop
+    AudioBufferSourceNode.prototype.start = function (...args) {
+      state.__audioStarts++
+      return start.apply(this, args)
+    }
+    AudioBufferSourceNode.prototype.stop = function (...args) {
+      state.__audioStops++
+      return stop.apply(this, args)
+    }
+  })
+  await page.reload()
+  const starts = () => page.evaluate(() => (window as unknown as { __audioStarts: number }).__audioStarts)
+  const stops = () => page.evaluate(() => (window as unknown as { __audioStops: number }).__audioStops)
+  await page.getByRole('button', { name: 'Play', exact: true }).click()
+  await expect.poll(starts).toBeGreaterThanOrEqual(3)
+
+  const vocal = block(page, 'feel-the-night')
+  await vocal.hover()
+  await vocal.getByRole('button', { name: 'Delete Would you like to dance at bar 1' }).click()
+  await expect.poll(stops).toBeGreaterThan(0)
+  await drag(page, block(page, 'night-drive').first(), page.getByTestId('bar-drums-1'))
+  const stopped = await stops()
+  expect(stopped).toBeGreaterThanOrEqual(2)
+  await add(page, 'Oh, oh, oh').click()
+  const started = await starts()
+  await page.getByRole('button', { name: 'Restart from bar one' }).click()
+  await expect.poll(starts).toBeGreaterThan(started)
 })
 
 test('audio failures are visible and transport remains recoverable', async ({ page }) => {

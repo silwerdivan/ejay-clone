@@ -29,9 +29,10 @@ export class StudioAudio {
     return this.loading
   }
 
-  async play() {
+  async play(shouldStart: () => boolean = () => true) {
     await Tone.start()
     await this.load()
+    if (!shouldStart()) return false
     const transport = Tone.getTransport()
     if (this.scheduled === undefined) {
       this.scheduled = transport.scheduleRepeat((time) => {
@@ -42,6 +43,11 @@ export class StudioAudio {
       }, '1m')
     }
     transport.start()
+    return true
+  }
+
+  stopLoop(loopId: string) {
+    try { this.players.get(loopId)?.stop() } catch { /* The player may not be started yet. */ }
   }
 
   pause() {

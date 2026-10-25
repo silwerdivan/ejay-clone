@@ -67,12 +67,16 @@ function TimelineBlock({ block, loop, selected, onSelect, onDuplicate, onDelete 
     >
       <div className="block-title"><span>{loop.name}</span><span className="block-duration">1 bar</span></div>
       <Waveform pattern={loop.pattern} />
-      <div className="block-actions">
+      <div className="block-actions" onPointerDown={(event) => event.stopPropagation()}>
         <button aria-label={`Duplicate ${loop.name} at bar ${block.bar + 1}`} title="Duplicate" onClick={(event) => { event.stopPropagation(); onDuplicate() }}><Icon name="copy" /></button>
         <button aria-label={`Delete ${loop.name} at bar ${block.bar + 1}`} title="Delete" onClick={(event) => { event.stopPropagation(); onDelete() }}><Icon name="trash" /></button>
       </div>
     </div>
   )
+}
+
+function occupiesSlot(blocks: Block[], lane: LaneId, bar: number, excludeId?: string) {
+  return blocks.some((block) => block.id !== excludeId && block.bar === bar && loopById(block.loopId)?.lane === lane)
 }
 
 function BarSlot({ lane, bar, children }: { lane: LaneId; bar: number; children?: React.ReactNode }) {
@@ -86,17 +90,22 @@ export default function App() {
   const [notice, setNotice] = useState('Choose a loop, then click or drag it into your track.')
   const [isPlaying, setIsPlaying] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
+  const [isSaved, setIsSaved] = useState(true)
   const [playhead, setPlayhead] = useState(0)
   const [activeLoop, setActiveLoop] = useState<LoopMeta | null>(null)
   const arrangementRef = useRef(arrangement)
   const audioRef = useRef<StudioAudio | null>(null)
+  const playRequestRef = useRef(0)
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
   arrangementRef.current = arrangement
 
-  useEffect(() => { saveArrangement(arrangement) }, [arrangement])
+  useEffect(() => { setIsSaved(saveArrangement(arrangement)) }, [arrangement])
   useEffect(() => {
     audioRef.current = new StudioAudio(() => arrangementRef.current)
-    return () => audioRef.current?.dispose()
+    return () => {
+      playRequestRef.current++
+      audioRef.current?.dispose()
+    }
   }, [])
   useEffect(() => {
     if (!isPlaying) return
@@ -124,7 +133,7 @@ export default function App() {
     if (!loop) return
     const bar = requestedBar ?? firstFree(loop.lane)
     if (bar === undefined) { setNotice(`${LANE_LABELS[loop.lane]} is full. Delete or move a block to make room.`); return }
-    if (arrangement.some((block) => loopById(block.loopId)?.lane === loop.lane && block.bar === bar)) {
+    if (occupiesSlot(arrangement, loop.lane, bar)) {
       setNotice(`Bar ${bar + 1} is occupied. Choose an empty bar.`); return
     }
     const block = { id: newId(), loopId, bar }
@@ -142,6 +151,7 @@ export default function App() {
     setNotice(`${loop.name} duplicated to bar ${bar + 1}.`)
   }
   const deleteBlock = (block: Block) => {
+    audioRef.current?.stopLoop(block.loopId)
     setArrangement((current) => current.filter((item) => item.id !== block.id))
     setSelected(null)
     setNotice(`${loopById(block.loopId)?.name} deleted. Bar ${block.bar + 1} is now free.`)
@@ -154,15 +164,16 @@ export default function App() {
       setIsPlaying(false)
       return
     }
+    const request = ++playRequestRef.current
     setIsLoading(true)
     setNotice('')
     try {
-      await audioRef.current?.play()
-      setIsPlaying(true)
+      const started = await audioRef.current?.play(() => request === playRequestRef.current)
+      if (started && request === playRequestRef.current) setIsPlaying(true)
     } catch {
-      setNotice('Audio couldn’t load. Check the bundled audio files and try again.')
+      if (request === playRequestRef.current) setNotice('Audio couldn’t load. Check the bundled audio files and try again.')
     } finally {
-      setIsLoading(false)
+      if (request === playRequestRef.current) setIsLoading(false)
     }
   }
   const restart = () => {
@@ -171,7 +182,9 @@ export default function App() {
     setNotice('Back to bar one.')
   }
   const reset = () => {
+    playRequestRef.current++
     audioRef.current?.reset()
+    setIsLoading(false)
     setIsPlaying(false)
     setPlayhead(0)
     setSelected(null)
@@ -191,9 +204,10 @@ export default function App() {
       const current = arrangementRef.current
       const source = current.find((block) => block.id === data.blockId)
       if (!source || (source.bar === target.bar)) return
-      if (current.some((block) => block.id !== source.id && block.bar === target.bar && loopById(block.loopId)?.lane === target.lane)) {
+      if (occupiesSlot(current, target.lane, target.bar, source.id)) {
         setNotice(`Bar ${target.bar + 1} is occupied. Your block stayed where it was.`); return
       }
+      audioRef.current?.stopLoop(source.loopId)
       setArrangement((current) => current.map((block) => block.id === source.id ? { ...block, bar: target.bar } : block))
       setNotice(`${loop.name} moved to bar ${target.bar + 1}.`)
     } else addLoop(loop.id, target.bar)
@@ -210,7 +224,7 @@ export default function App() {
               <Icon name={isPlaying ? 'pause' : 'play'} /><span>{isLoading ? 'Loading…' : isPlaying ? 'Pause' : 'Play'}</span>
             </button>
           </div>
-          <div className="session-spec"><span><i className={isPlaying ? 'live' : ''} />{isPlaying ? 'Playing' : 'Ready'}</span><strong>120 <small>BPM</small></strong><span>A minor</span><span>8 bars</span></div>
+          <div className="session-spec"><span><i className={isPlaying ? 'live' : ''} />{isPlaying ? 'Playing' : 'Ready'}</span><strong>120 <small>BPM</small></strong><span>C minor</span><span>8 bars</span></div>
           <button className="reset-button" onClick={reset}><Icon name="reset" />Reset demo</button>
         </header>
 
@@ -233,7 +247,7 @@ export default function App() {
             </aside>
 
             <section className="arrangement" aria-label="Eight-bar arrangement">
-              <div className="panel-heading arrangement-heading"><div><span className="section-kicker">Your arrangement</span><h2>Night session <span>01</span></h2></div><span className="save-state"><i />Saved locally</span></div>
+              <div className="panel-heading arrangement-heading"><div><span className="section-kicker">Your arrangement</span><h2>Night session <span>01</span></h2></div><span className={`save-state ${isSaved ? '' : 'unsaved'}`}><i />{isSaved ? 'Saved locally' : 'Not saved'}</span></div>
               <div className="timeline-scroll">
                 <div className="timeline">
                   <div className="lane-labels">
@@ -251,11 +265,11 @@ export default function App() {
                   </div>
                 </div>
               </div>
-              <div className="arrangement-footer"><span><kbd>Click</kbd> Select</span><span><kbd>Drag</kbd> Move</span><span><kbd>Delete</kbd> Remove</span><span className="key-note">All loops · 120 BPM · A minor</span></div>
+              <div className="arrangement-footer"><span><kbd>Click</kbd> Select</span><span><kbd>Drag</kbd> Move</span><span><kbd>Delete</kbd> Remove</span><span className="key-note">All loops · 120 BPM · C minor</span></div>
             </section>
           </section>
         </main>
-        <div className="status-bar" role="status" aria-live="polite"><span className="status-light" />{notice || 'Your arrangement is saved in this browser.'}</div>
+        <div className="status-bar" role="status" aria-live="polite"><span className="status-light" />{notice || (isSaved ? 'Your arrangement is saved in this browser.' : 'Changes are not saved. Check browser storage permissions.')}</div>
       </div>
       <DragOverlay>{activeLoop && <div className={`drag-card ${activeLoop.lane}`}><strong>{activeLoop.name}</strong><Waveform pattern={activeLoop.pattern} /></div>}</DragOverlay>
     </DndContext>

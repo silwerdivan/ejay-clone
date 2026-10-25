@@ -29,7 +29,8 @@ export function loadArrangement(): Block[] {
 export function saveArrangement(arrangement: Block[]) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(arrangement))
+    return true
   } catch {
-    // The studio remains usable when storage is unavailable or full.
+    return false
   }
 }
