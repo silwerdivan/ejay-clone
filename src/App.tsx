@@ -7,10 +7,11 @@ import { StudioAudio } from './audio'
 import { LANES, LANE_LABELS, LOOPS, freshDemo, loopById, type Block, type LaneId, type LoopMeta } from './data'
 import { loadArrangement, saveArrangement } from './storage'
 
-function Icon({ name }: { name: 'play' | 'pause' | 'restart' | 'reset' | 'copy' | 'trash' | 'plus' }) {
+function Icon({ name }: { name: 'play' | 'pause' | 'stop' | 'restart' | 'reset' | 'copy' | 'trash' | 'plus' }) {
   const paths = {
     play: <path d="m9 6 9 6-9 6Z" fill="currentColor" stroke="none" />,
     pause: <><path d="M9 6v12M15 6v12" strokeWidth="3" /></>,
+    stop: <rect x="7" y="7" width="10" height="10" rx="1" fill="currentColor" stroke="none" />,
     restart: <><path d="M5 8V3m0 0h5M5 3l3.2 3.2a7 7 0 1 1-1.1 10.3" /></>,
     reset: <><path d="M4 11a8 8 0 1 1 2.3 6M4 11V6m0 5h5" /></>,
     copy: <><rect x="8" y="8" width="10" height="11" rx="2" /><path d="M15 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2" /></>,
@@ -24,21 +25,30 @@ function Waveform({ pattern }: { pattern: number[] }) {
   return <span className="waveform" aria-hidden="true">{[...pattern, ...pattern].map((height, index) => <i key={index} style={{ height: `${3 + height * 2}px` }} />)}</span>
 }
 
-function LibraryLoop({ loop, onAdd }: { loop: LoopMeta; onAdd: (loopId: string) => void }) {
+function LibraryLoop({ loop, previewing, onAdd, onPreview }: {
+  loop: LoopMeta
+  previewing: boolean
+  onAdd: (loopId: string) => void
+  onPreview: (loopId: string) => void
+}) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `library-${loop.id}`, data: { type: 'library', loopId: loop.id },
   })
   return (
-    <button
-      ref={setNodeRef} {...listeners} {...attributes}
-      className={`library-loop ${isDragging ? 'dragging' : ''}`}
-      data-loop-id={loop.id} onClick={() => onAdd(loop.id)}
-      aria-label={`Add ${loop.name} to ${LANE_LABELS[loop.lane]} lane`}
-    >
-      <span className={`lane-dot ${loop.lane}`} />
-      <span className="library-loop-copy"><strong>{loop.name}</strong><small>{loop.detail}</small></span>
-      <span className="add-hint"><Icon name="plus" /></span>
-    </button>
+    <div className={`library-loop ${previewing ? 'previewing' : ''} ${isDragging ? 'dragging' : ''}`} data-loop-id={loop.id}>
+      <button
+        ref={setNodeRef} {...listeners} {...attributes}
+        className="library-loop-add" onClick={() => onAdd(loop.id)}
+        aria-label={`Add ${loop.name} to ${LANE_LABELS[loop.lane]} lane`}
+      >
+        <span className={`lane-dot ${loop.lane}`} />
+        <span className="library-loop-copy"><strong>{loop.name}</strong><small>{loop.detail}</small></span>
+        <span className="add-hint"><Icon name="plus" /></span>
+      </button>
+      <button className="preview-button" onClick={() => onPreview(loop.id)} aria-label={`${previewing ? 'Stop' : 'Play'} ${loop.name} preview`}>
+        <Icon name={previewing ? 'stop' : 'play'} />
+      </button>
+    </div>
   )
 }
 
@@ -93,9 +103,11 @@ export default function App() {
   const [isSaved, setIsSaved] = useState(true)
   const [playhead, setPlayhead] = useState(0)
   const [activeLoop, setActiveLoop] = useState<LoopMeta | null>(null)
+  const [previewLoop, setPreviewLoop] = useState<string | null>(null)
   const arrangementRef = useRef(arrangement)
   const audioRef = useRef<StudioAudio | null>(null)
   const playRequestRef = useRef(0)
+  const previewRequestRef = useRef(0)
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
   arrangementRef.current = arrangement
 
@@ -104,6 +116,7 @@ export default function App() {
     audioRef.current = new StudioAudio(() => arrangementRef.current)
     return () => {
       playRequestRef.current++
+      previewRequestRef.current++
       audioRef.current?.dispose()
     }
   }, [])
@@ -128,6 +141,28 @@ export default function App() {
     return Array.from({ length: 8 }, (_, bar) => bar).find((bar) => !occupied.has(bar))
   }
   const newId = () => crypto.randomUUID()
+  const stopPreview = () => {
+    previewRequestRef.current++
+    audioRef.current?.stopPreview()
+    setPreviewLoop(null)
+  }
+  const togglePreview = async (loopId: string) => {
+    if (previewLoop === loopId) { stopPreview(); return }
+    const request = ++previewRequestRef.current
+    audioRef.current?.stopPreview()
+    setPreviewLoop(loopId)
+    setNotice('')
+    try {
+      const started = await audioRef.current?.preview(loopId, () => request === previewRequestRef.current)
+      if (!started && request === previewRequestRef.current) setPreviewLoop(null)
+    } catch {
+      if (request === previewRequestRef.current) {
+        audioRef.current?.stopPreview()
+        setPreviewLoop(null)
+        setNotice('Audio couldn’t load. Check the bundled audio files and try again.')
+      }
+    }
+  }
   const addLoop = (loopId: string, requestedBar?: number) => {
     const loop = loopById(loopId)
     if (!loop) return
@@ -137,6 +172,7 @@ export default function App() {
       setNotice(`Bar ${bar + 1} is occupied. Choose an empty bar.`); return
     }
     const block = { id: newId(), loopId, bar }
+    if (previewLoop === loopId) stopPreview()
     setArrangement((current) => [...current, block])
     setSelected(block.id)
     setNotice(`${loop.name} added to ${LANE_LABELS[loop.lane]}, bar ${bar + 1}.`)
@@ -183,7 +219,9 @@ export default function App() {
   }
   const reset = () => {
     playRequestRef.current++
+    previewRequestRef.current++
     audioRef.current?.reset()
+    setPreviewLoop(null)
     setIsLoading(false)
     setIsPlaying(false)
     setPlayhead(0)
@@ -241,7 +279,7 @@ export default function App() {
               <div className="library-scroll">
                 {LANES.map((lane) => <section className="library-group" key={lane} aria-labelledby={`library-${lane}`}>
                   <h3 id={`library-${lane}`}><span className={`lane-dot ${lane}`} />{LANE_LABELS[lane]}<span>1 bar</span></h3>
-                  {LOOPS.filter((loop) => loop.lane === lane).map((loop) => <LibraryLoop key={loop.id} loop={loop} onAdd={addLoop} />)}
+                  {LOOPS.filter((loop) => loop.lane === lane).map((loop) => <LibraryLoop key={loop.id} loop={loop} previewing={previewLoop === loop.id} onAdd={addLoop} onPreview={togglePreview} />)}
                 </section>)}
               </div>
             </aside>

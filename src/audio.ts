@@ -5,6 +5,7 @@ export class StudioAudio {
   private players = new Map<string, Tone.Player>()
   private loading?: Promise<void>
   private scheduled?: number
+  private previewPlayer?: Tone.Player
 
   constructor(private getArrangement: () => Block[]) {}
 
@@ -46,6 +47,27 @@ export class StudioAudio {
     return true
   }
 
+  async preview(loopId: string, shouldStart: () => boolean) {
+    await Tone.start()
+    await this.load()
+    if (!shouldStart()) return false
+    this.stopPreview()
+    const source = this.players.get(loopId)
+    if (!source) return false
+    this.previewPlayer = new Tone.Player(source.buffer).toDestination()
+    this.previewPlayer.volume.value = source.volume.value
+    this.previewPlayer.loop = true
+    this.previewPlayer.start()
+    return true
+  }
+
+  stopPreview() {
+    if (!this.previewPlayer) return
+    try { this.previewPlayer.stop() } catch { /* The player may not be started yet. */ }
+    this.previewPlayer.dispose()
+    this.previewPlayer = undefined
+  }
+
   stopLoop(loopId: string) {
     try { this.players.get(loopId)?.stop() } catch { /* The player may not be started yet. */ }
   }
@@ -64,6 +86,7 @@ export class StudioAudio {
     Tone.getTransport().stop()
     Tone.getTransport().position = 0
     this.stopPlayers()
+    this.stopPreview()
   }
 
   seconds() {

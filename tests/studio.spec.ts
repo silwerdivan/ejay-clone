@@ -2,6 +2,7 @@ import { test, expect, type Page } from '@playwright/test'
 
 const block = (page: Page, loopId: string) => page.locator(`[data-testid="timeline-block"][data-loop-id="${loopId}"]`)
 const add = (page: Page, name: string) => page.getByRole('button', { name: `Add ${name} to`, exact: false })
+const preview = (page: Page, name: string) => page.getByRole('button', { name: new RegExp(`^(Play|Stop) ${name} preview$`) })
 
 async function drag(page: Page, source: ReturnType<Page['locator']>, target: ReturnType<Page['locator']>) {
   await source.scrollIntoViewIfNeeded()
@@ -14,6 +15,30 @@ async function drag(page: Page, source: ReturnType<Page['locator']>, target: Ret
   await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 12 })
   await page.mouse.up()
   await page.waitForTimeout(100)
+}
+
+async function instrumentPreviews(page: Page) {
+  await page.addInitScript(() => {
+    const state = window as unknown as { __previewStarts: number; __previewStops: number }
+    state.__previewStarts = 0
+    state.__previewStops = 0
+    const looping = new WeakSet<AudioBufferSourceNode>()
+    const start = AudioBufferSourceNode.prototype.start
+    const stop = AudioBufferSourceNode.prototype.stop
+    AudioBufferSourceNode.prototype.start = function (...args) {
+      if (this.loop) { state.__previewStarts++; looping.add(this) }
+      return start.apply(this, args)
+    }
+    AudioBufferSourceNode.prototype.stop = function (...args) {
+      if (looping.has(this)) state.__previewStops++
+      return stop.apply(this, args)
+    }
+  })
+  await page.reload()
+  return {
+    starts: () => page.evaluate(() => (window as unknown as { __previewStarts: number }).__previewStarts),
+    stops: () => page.evaluate(() => (window as unknown as { __previewStops: number }).__previewStops),
+  }
 }
 
 test.beforeEach(async ({ page }) => { await page.goto('/') })
@@ -43,6 +68,154 @@ test('opens the complete prefilled studio without requesting sound', async ({ pa
   await page.getByRole('button', { name: 'Play', exact: true }).click()
   await expect.poll(() => page.evaluate(() => (window as unknown as { __soundRequests: number }).__soundRequests)).toBeGreaterThan(0)
 })
+
+test('library wheel scrolling reaches the final loop below a fixed heading', async ({ page }) => {
+  const viewport = page.locator('.library-scroll')
+  const heading = page.getByRole('heading', { name: 'Loop library' })
+  const headingTop = await heading.evaluate((element) => element.getBoundingClientRect().top)
+  expect(await viewport.evaluate((element) => element.scrollHeight)).toBeGreaterThan(await viewport.evaluate((element) => element.clientHeight))
+  await viewport.hover()
+  await page.mouse.wheel(0, 2000)
+  await expect.poll(() => viewport.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+  await expect(add(page, 'Oh, oh, oh')).toBeInViewport()
+  expect(await heading.evaluate((element) => element.getBoundingClientRect().top)).toBe(headingTop)
+})
+
+test('touch pans the narrow library vertically from a loop row', async ({ page }) => {
+  await page.setViewportSize({ width: 600, height: 800 })
+  const viewport = page.locator('.library-scroll')
+  const row = add(page, 'Night drive')
+  await row.scrollIntoViewIfNeeded()
+  const bounds = await row.boundingBox()
+  if (!bounds) throw new Error('Library row geometry unavailable')
+  const x = bounds.x + bounds.width / 2
+  const y = bounds.y + bounds.height / 2
+  const client = await page.context().newCDPSession(page)
+  await client.send('Emulation.setTouchEmulationEnabled', { enabled: true })
+  await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] })
+  for (let step = 1; step <= 6; step++) {
+    await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: y - step * 25 }] })
+    await page.waitForTimeout(25)
+  }
+  await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+  await expect.poll(() => viewport.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+})
+
+test('keyboard previews loop continuously without adding and stop clears the active row', async ({ page }) => {
+  const { starts, stops } = await instrumentPreviews(page)
+  await expect(page.getByRole('button', { name: /^Play .* preview$/ })).toHaveCount(16)
+  const control = preview(page, 'Soft focus')
+  await control.focus()
+  expect(await control.evaluate((element) => getComputedStyle(element).outlineStyle)).not.toBe('none')
+  await page.keyboard.press('Enter')
+  await expect(page.getByRole('button', { name: 'Stop Soft focus preview' })).toBeVisible()
+  await expect.poll(starts).toBe(1)
+  await expect(page.locator('.library-loop[data-loop-id="soft-focus"]')).toHaveClass(/previewing/)
+  await expect(page.getByTestId('timeline-block')).toHaveCount(14)
+  await page.keyboard.press('Space')
+  await expect.poll(stops).toBe(1)
+  await expect(page.getByRole('button', { name: 'Play Soft focus preview' })).toBeVisible()
+  await expect(page.locator('.library-loop[data-loop-id="soft-focus"]')).not.toHaveClass(/previewing/)
+})
+
+test('switching previews stops the previous source and reset silences the replacement', async ({ page }) => {
+  const { starts, stops } = await instrumentPreviews(page)
+  await preview(page, 'Soft focus').click()
+  await expect.poll(starts).toBe(1)
+  await preview(page, 'Roller').click()
+  await expect.poll(starts).toBe(2)
+  await expect.poll(stops).toBe(1)
+  await expect(page.locator('.library-loop.previewing')).toHaveCount(1)
+  await expect(page.getByRole('button', { name: 'Play Soft focus preview' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Stop Roller preview' })).toBeVisible()
+  await page.getByRole('button', { name: 'Reset demo' }).click()
+  await expect.poll(stops).toBe(2)
+  await expect(page.locator('.library-loop.previewing')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Play Roller preview' })).toBeVisible()
+})
+
+test('preview mixes with arrangement playback and survives arrangement Pause', async ({ page }) => {
+  const { stops } = await instrumentPreviews(page)
+  await page.getByRole('button', { name: 'Play', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Pause', exact: true })).toBeVisible()
+  await preview(page, 'Soft focus').click()
+  await expect(page.getByRole('button', { name: 'Stop Soft focus preview' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Pause', exact: true })).toBeVisible()
+  await expect.poll(async () => Number(await page.getByTestId('playhead').getAttribute('data-position'))).toBeGreaterThan(0)
+  await page.getByRole('button', { name: 'Pause', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Play', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Stop Soft focus preview' })).toBeVisible()
+  await page.waitForTimeout(100)
+  expect(await stops()).toBe(0)
+  await preview(page, 'Soft focus').click()
+  await expect.poll(stops).toBe(1)
+})
+
+test('only successful additions of the active loop stop its preview', async ({ page }) => {
+  const { starts, stops } = await instrumentPreviews(page)
+  await preview(page, 'Soft focus').click()
+  await expect.poll(starts).toBe(1)
+  await add(page, 'Sub current').click()
+  await expect(page.getByRole('button', { name: 'Stop Soft focus preview' })).toBeVisible()
+  expect(await stops()).toBe(0)
+  await add(page, 'Soft focus').click()
+  await expect.poll(stops).toBe(1)
+  await expect(block(page, 'soft-focus')).toHaveAttribute('data-bar', '1')
+
+  await preview(page, 'Soft focus').click()
+  await expect.poll(starts).toBe(2)
+  for (const name of ['After hours', 'Night drive', 'Silver break']) await add(page, name).click()
+  await add(page, 'Soft focus').click()
+  await expect(page.locator('.status-bar')).toContainText('Drums is full')
+  await expect(page.getByRole('button', { name: 'Stop Soft focus preview' })).toBeVisible()
+  expect(await stops()).toBe(1)
+
+  await preview(page, 'Roller').click()
+  await expect.poll(starts).toBe(3)
+  await drag(page, add(page, 'Roller'), page.getByTestId('bar-bass-3'))
+  await expect.poll(stops).toBe(3)
+  await expect(page.locator('[data-testid="timeline-block"][data-loop-id="roller"][data-bar="3"]')).toBeVisible()
+})
+
+test('preview audio failures are visible and retry recovers without adding a block', async ({ page }) => {
+  const { starts } = await instrumentPreviews(page)
+  await page.route('**/audio/*.wav', (route) => route.abort())
+  await preview(page, 'Soft focus').click()
+  await expect(page.locator('.status-bar')).toContainText('Audio couldn’t load')
+  await expect(page.getByRole('button', { name: 'Play Soft focus preview' })).toBeEnabled()
+  await expect(page.locator('.library-loop.previewing')).toHaveCount(0)
+  await expect(page.getByTestId('timeline-block')).toHaveCount(14)
+  await page.unroute('**/audio/*.wav')
+  await preview(page, 'Soft focus').click()
+  await expect(page.getByRole('button', { name: 'Stop Soft focus preview' })).toBeVisible()
+  await expect.poll(starts).toBe(1)
+  await expect(page.locator('.library-loop[data-loop-id="soft-focus"]')).toHaveClass(/previewing/)
+})
+
+for (const action of ['Stop', 'Switch', 'Reset'] as const) {
+  test(`${action} invalidates a preview request still waiting for audio`, async ({ page }) => {
+    const { starts } = await instrumentPreviews(page)
+    let release!: () => void
+    let waiting = 0
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    await page.route('**/audio/*.wav', async (route) => {
+      waiting++
+      await gate
+      waiting--
+      await route.continue()
+    })
+    await preview(page, 'Soft focus').click()
+    if (action === 'Stop') await preview(page, 'Soft focus').click()
+    if (action === 'Switch') await preview(page, 'Roller').click()
+    if (action === 'Reset') await page.getByRole('button', { name: 'Reset demo' }).click()
+    release()
+    await expect.poll(() => waiting).toBe(0)
+    await page.waitForTimeout(250)
+    expect(await starts()).toBe(action === 'Switch' ? 1 : 0)
+    await expect(page.locator('.library-loop.previewing')).toHaveCount(action === 'Switch' ? 1 : 0)
+    if (action === 'Switch') await expect(page.getByRole('button', { name: 'Stop Roller preview' })).toBeVisible()
+  })
+}
 
 test('adds by mouse and keyboard to the first free one-bar slot', async ({ page }) => {
   await add(page, 'Soft focus').click()

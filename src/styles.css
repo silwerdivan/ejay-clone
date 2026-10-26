@@ -52,13 +52,13 @@ h1 { font-size: clamp(29px, 3vw, 43px); line-height: 1.06; letter-spacing: -1.8p
 h1 span { color: #8c958e; font-weight: 450; }
 .intro-note { margin: 0 2px 3px 30px; color: #8d968e; font-size: 12px; line-height: 1.65; }
 .workspace { display: grid; grid-template-columns: 246px minmax(0, 1fr); height: calc(100dvh - 301px); min-height: 570px; max-height: 760px; border: 1px solid #303631; border-radius: 12px; overflow: hidden; background: var(--panel); box-shadow: 0 20px 60px #00000026; }
-.library { border-right: 1px solid var(--line); padding: 22px 14px 0; min-width: 0; display: flex; flex-direction: column; background: #171b18; }
+.library { border-right: 1px solid var(--line); padding: 22px 14px 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: #171b18; }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 5px; }
 .section-kicker { display: block; font-size: 8px; letter-spacing: 1.4px; margin-bottom: 4px; color: #737d75; }
 .panel-heading h2 { font-size: 16px; letter-spacing: -.35px; margin: 0; font-weight: 650; }
 .loop-count { display: grid; place-items: center; width: 27px; height: 23px; border: 1px solid #363d37; border-radius: 5px; color: #899289; font-size: 10px; }
 .library-help { color: #747e76; font-size: 10px; margin: 11px 5px 17px; }
-.library-scroll { overflow: auto; min-height: 0; padding: 0 4px 20px; scrollbar-width: thin; scrollbar-color: #3b443c transparent; }
+.library-scroll { overflow: auto; flex: 1; min-height: 0; padding: 0 4px 20px; scrollbar-width: thin; scrollbar-color: #3b443c transparent; }
 .library-group { margin-bottom: 17px; }
 .library-group h3 { display: flex; align-items: center; gap: 7px; color: #b6bdb5; font-size: 10px; font-weight: 650; margin: 0 0 7px; }
 .library-group h3 > span:last-child { margin-left: auto; color: #59635b; font-size: 8px; font-weight: 500; }
@@ -67,15 +67,21 @@ h1 span { color: #8c958e; font-weight: 450; }
 .bass.lane-dot, .bass .lane-dot { background: var(--bass); }
 .synth.lane-dot, .synth .lane-dot { background: var(--synth); }
 .vocals.lane-dot, .vocals .lane-dot { background: var(--vocals); }
-.library-loop { width: 100%; min-height: 47px; display: flex; align-items: center; gap: 9px; text-align: left; padding: 6px 8px; margin: 3px 0; border: 1px solid transparent; border-radius: 6px; background: #202521; touch-action: none; transition: border-color .15s, background .15s; }
+.library-loop { width: 100%; min-height: 47px; display: flex; align-items: center; gap: 4px; padding: 6px; margin: 3px 0; border: 1px solid transparent; border-radius: 6px; background: #202521; touch-action: pan-y; transition: border-color .15s, background .15s; }
 .library-loop:hover { background: #282e29; border-color: #3d463e; }
+.library-loop.previewing { background: #293224; border-color: var(--lime); }
 .library-loop.dragging { opacity: .35; }
+.library-loop-add { flex: 1; min-width: 0; display: flex; align-items: center; gap: 9px; padding: 0; border: 0; background: transparent; text-align: left; touch-action: pan-y; }
 .library-loop-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .library-loop strong { font-size: 10px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .library-loop small { color: #788179; font-size: 8px; }
 .add-hint { margin-left: auto; color: #606a61; opacity: 0; }
-.library-loop:hover .add-hint, .library-loop:focus-visible .add-hint { opacity: 1; }
+.library-loop:hover .add-hint, .library-loop-add:focus-visible .add-hint { opacity: 1; }
 .add-hint svg { width: 13px; height: 13px; }
+.preview-button { width: 28px; height: 30px; flex: none; display: grid; place-items: center; padding: 0; border: 0; border-radius: 4px; background: #ffffff08; color: #929c93; }
+.preview-button:hover { background: #ffffff12; color: var(--lime); }
+.previewing .preview-button { color: var(--lime); background: #d9ff5a14; }
+.preview-button svg { width: 13px; height: 13px; }
 .arrangement { min-width: 0; display: flex; flex-direction: column; background: #1a1e1b; }
 .arrangement-heading { height: 76px; padding: 0 24px; border-bottom: 1px solid var(--line); }
 .arrangement-heading h2 { font-size: 17px; }
