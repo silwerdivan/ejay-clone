@@ -5,6 +5,7 @@ export class StudioAudio {
   private players = new Map<string, Tone.Player>()
   private loading?: Promise<void>
   private scheduled?: number
+  private lastScheduledBar = -1
   private previewPlayer?: Tone.Player
 
   constructor(private getArrangement: () => Block[]) {}
@@ -12,6 +13,8 @@ export class StudioAudio {
   private load() {
     if (!this.loading) {
       const transport = Tone.getTransport()
+      // Keep short main-thread stalls from moving clips into neighboring bars.
+      Tone.getContext().lookAhead = 0.5
       transport.bpm.value = 120
       transport.timeSignature = 4
       transport.loop = true
@@ -37,7 +40,10 @@ export class StudioAudio {
     const transport = Tone.getTransport()
     if (this.scheduled === undefined) {
       this.scheduled = transport.scheduleRepeat((time) => {
-        const bar = Math.floor(transport.getTicksAtTime(time) / (transport.PPQ * 4)) % 8
+        const scheduledBar = Math.floor(transport.getTicksAtTime(Math.max(time, Tone.now())) / (transport.PPQ * 4))
+        if (scheduledBar === this.lastScheduledBar) return
+        this.lastScheduledBar = scheduledBar
+        const bar = ((scheduledBar % 8) + 8) % 8
         for (const block of this.getArrangement()) {
           if (block.bar === bar) this.players.get(block.loopId)?.start(time)
         }
@@ -74,17 +80,20 @@ export class StudioAudio {
 
   pause() {
     Tone.getTransport().pause()
+    this.lastScheduledBar = -1
     this.stopPlayers()
   }
 
   restart() {
     Tone.getTransport().position = 0
+    this.lastScheduledBar = -1
     this.stopPlayers()
   }
 
   reset() {
     Tone.getTransport().stop()
     Tone.getTransport().position = 0
+    this.lastScheduledBar = -1
     this.stopPlayers()
     this.stopPreview()
   }
