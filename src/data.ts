@@ -22,7 +22,7 @@ const loop = (
   name: string,
   detail: string,
   pattern: number[],
-): LoopMeta => ({ id, name, detail, lane, audio: `/audio/${id}.wav`, pattern })
+): LoopMeta => ({ id, name, detail, lane, audio: `${import.meta.env.BASE_URL}audio/${id}.wav`, pattern })
 
 export const LOOPS: LoopMeta[] = [
   loop('drums', 'night-drive', 'Night drive', 'Four on the floor', [2, 8, 3, 7, 2, 9, 3, 6, 2, 8, 4, 7, 2, 9, 5, 8]),
